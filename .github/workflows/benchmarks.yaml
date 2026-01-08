@@ -1,0 +1,72 @@
+name: Benchmarks
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+
+jobs:
+  benchmarks:
+    permissions:
+      contents: write # we'll push to the `benchmarks` branch
+    name: Benchmarks
+    runs-on: macos-latest
+    steps:
+      - run: sudo xcode-select -s /Applications/Xcode_26.0.app
+      - run: swift --version
+      - name: Install jemalloc
+        run: brew install jemalloc
+      - name: Check out code
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+      - name: Run Benchmarks
+        run: swift package --allow-writing-to-package-directory benchmark --format influx
+        working-directory: Benchmarks
+      - name: upload results
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: results
+          path: Benchmarks/Current_run.influx.csv
+          if-no-files-found: error
+
+  notebook:
+    permissions:
+      contents: write # we'll push to the `benchmarks` branch
+    name: Notebook
+    needs: [benchmarks]
+    runs-on: macos-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          ref: benchmarks
+      - name: download results
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          name: results
+      - name: Install Node
+        uses: actions/setup-node@395ad3262231945c25e8478fd5baf05154b1d79f # v6.1.0
+        with:
+          node-version: 24
+      - name: integrate benchmark data
+        run: node append_benchmarks.js Current_run.influx.csv
+      - name: update notebook
+        run: |
+          npm ci
+          cp ../benchmarks.json . # nodejs data loader can't access ../
+          npm run docs:build
+          rm benchmarks.json
+        working-directory: src/
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: commit if changed
+        run: |
+          if ! git diff-index --quiet HEAD -- benchmarks.json benchmarks/; then
+            git config --local user.email "${GITHUB_ACTOR}@users.noreply.github.com"
+            git config --local user.name "${GITHUB_ACTOR}"
+            git add -f benchmarks.json benchmarks/
+            git diff --staged
+            git commit -m "benchmarks: update notebook for ${GITHUB_SHA}"
+            git push origin benchmarks
+          else
+            echo "no changes, no commit"
+          fi
