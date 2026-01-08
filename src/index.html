@@ -76,14 +76,29 @@
     d => d.name,
     d => d.measure
   );
+  // Get latest absolute values for display
+  const latestValuesByMeasure = d3.rollup(
+    rows,
+    (v) => {
+      v.sort((a, b) => b.date.getTime() - a.date.getTime());
+      return v[0].value; // Latest value
+    },
+    d => d.name,
+    d => d.measure
+  );
+
   const benchmarksWithRelDiffs = [];
   
   for (const [name, measureMap] of relativeDifferencesByMeasure) {
     const outputRow = { name };
+    const latestValues = latestValuesByMeasure.get(name);
 
     for (const [measure, data] of measureMap) {
-      if (data && data?.relativeDifference !== null) {
-        outputRow[measure] = data.relativeDifference;
+      if (data && data?.relativeDifference !== null && latestValues) {
+        outputRow[measure] = {
+          absoluteValue: latestValues.get(measure),
+          relativeDifference: data.relativeDifference
+        };
       }
     }
 
@@ -93,20 +108,20 @@
       benchmarksWithRelDiffs.push(outputRow);
     }
   }
-  d3.sort(benchmarksWithRelDiffs, (d) => d['wallclock_ns/p50']);
+  d3.sort(benchmarksWithRelDiffs, (d) => d['wallclock_ns/p50']?.absoluteValue || 0);
 
   const numericKeys = ["wallclock_ns/p50", "wallclock_ns/p90", "wallclock_ns/p99", "malloc_bytes"];
   const minMaxByMeasureKeyLog2 = new Map(); // Stores { key: { minLog2, maxLog2 } } for each column
 
-  // Calculate min/max of log2(value) for each numeric key (column)
+  // Calculate min/max of log2(relativeDifference) for each numeric key (column)
   numericKeys.forEach(key => {
     let colMinLog2 = Infinity;
     let colMaxLog2 = -Infinity;
 
     benchmarksWithRelDiffs.forEach(row => {
-      const value = row[key];
-      if (typeof value === 'number' && !isNaN(value) && value > 0) { // Ensure value is positive for log2
-        const log2Value = Math.log2(value);
+      const measureData = row[key];
+      if (measureData && typeof measureData === 'object' && typeof measureData.relativeDifference === 'number' && !isNaN(measureData.relativeDifference) && measureData.relativeDifference > 0) {
+        const log2Value = Math.log2(measureData.relativeDifference);
         colMinLog2 = Math.min(colMinLog2, log2Value);
         colMaxLog2 = Math.max(colMaxLog2, log2Value);
       }
@@ -139,10 +154,17 @@
   function colorScaleBackground(key, precision = 2, addPaddingRight = true) {
     const scale = scalesByMeasureKey.get(key);
     return value => {
-      if (typeof value !== 'number' || isNaN(value) || value === null) {
-        return value; // Return as-is for non-numeric, NaN, or null values
+      if (!value || typeof value !== 'object') {
+        return value; // Return as-is for non-object values
       }
-      const bgColor = scale(Math.log2(value));
+      
+      const { absoluteValue, relativeDifference } = value;
+      
+      if (typeof relativeDifference !== 'number' || isNaN(relativeDifference) || relativeDifference === null) {
+        return absoluteValue; // Return absolute value if no valid relative difference
+      }
+      
+      const bgColor = scale(Math.log2(relativeDifference));
       // Simple luminance check for text color contrast
       const textColor = d3.color(bgColor).rgb().r * 0.299 + d3.color(bgColor).rgb().g * 0.587 + d3.color(bgColor).rgb().b * 0.114 > 186 ? "black" : "white";
   
@@ -156,7 +178,7 @@
         box-sizing: border-box;
         ${addPaddingRight ? 'padding-right: 3px;' : ''} /* Optional padding */
         color: ${textColor};
-      ">${value.toFixed(precision)}</div>`;
+      ">${absoluteValue.toFixed(precision)}</div>`;
     };
   }
 
@@ -212,7 +234,7 @@
   <script type="module" >
   let plot;
   if (selectedRow) {
-    const data = d3.sort(rows.filter((d) => d.name === selectedRow.name), (d) => d.date);
+    const data = d3.sort(rows.filter((d) => d.name === selectedRow.name && (d.measure === 'wallclock_ns/p50' || d.measure === 'malloc_bytes')), (d) => d.date);
     const idx = 0; // Since we don't have selectedTag anymore, start from beginning
 
     const xy = Plot.normalizeY({
